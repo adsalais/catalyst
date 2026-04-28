@@ -1259,8 +1259,6 @@ class Renderer {
 
   #resizeSheet = new CSSStyleSheet();
   #resizeAbort = null;
-  #metricsObserver = null;
-  #metricsProbe = null;
   #widthLockRaf = null;
   #resizeColIndex = -1;
 
@@ -1387,31 +1385,20 @@ class Renderer {
     cell.appendChild(span);
     row.appendChild(cell);
     this.#scroll.appendChild(row);
-    this.#metricsProbe = row;
 
-    this.#metricsObserver = new ResizeObserver((entries) => {
-      const h = entries[0].contentRect.height;
-      if (h > 0) {
-        const cellRect = cell.getBoundingClientRect();
-        const spanRect = span.getBoundingClientRect();
-        const paddingH = Math.max(0, cellRect.width - spanRect.width);
-        const charWidth = Math.max(1, spanRect.width / N);
+    const cellRect = cell.getBoundingClientRect();
+    const spanRect = span.getBoundingClientRect();
+    const paddingH = Math.max(0, cellRect.width - spanRect.width);
+    const charWidth = Math.max(1, spanRect.width / N);
 
-        if (
-          charWidth !== this.#cellMetrics.charWidth ||
-          paddingH !== this.#cellMetrics.paddingH
-        ) {
-          this.#cellMetrics = { charWidth, paddingH };
-          this.#computeColumnStyles();
-          this.#applyColumnFlexStyles();
-        }
-      }
-      this.#metricsObserver?.disconnect();
-      this.#metricsObserver = null;
-      this.#metricsProbe = null;
-      this.#scroll?.removeChild(row);
-    });
-    this.#metricsObserver.observe(cell);
+    this.#scroll.removeChild(row);
+
+    if (
+      charWidth !== this.#cellMetrics.charWidth ||
+      paddingH !== this.#cellMetrics.paddingH
+    ) {
+      this.#cellMetrics = { charWidth, paddingH };
+    }
 
     return this.#cellMetrics;
   }
@@ -2064,12 +2051,19 @@ class Renderer {
       this.#scroll.style.overflowX = "";
     }
 
-    this.#metricsObserver?.disconnect();
-    this.#metricsObserver = null;
-    if (this.#metricsProbe && this.#scroll) {
-      this.#scroll.removeChild(this.#metricsProbe);
-      this.#metricsProbe = null;
-    }
+    this.#content.removeEventListener("click", this.#onContentClick);
+    this.#scroll.removeEventListener("keydown", this.#onKeyDown);
+    this.#scroll.removeEventListener("focusin", this.#onFocusIn);
+    this.#scroll.removeEventListener("scroll", this.#onScrollSync, {
+      passive: true,
+    });
+    this.#headerRow.removeEventListener("scroll", this.#onHeaderScrollSync, {
+      passive: true,
+    });
+    this.#headerRow.removeEventListener(
+      "pointerdown",
+      this.#onHeaderPointerDown,
+    );
   }
 
   resume() {
@@ -2097,13 +2091,6 @@ class Renderer {
     this.#root.host?.style.removeProperty("--vsg-resize-width");
     this.#headerRow.style.overflowX = "";
     this.#scroll.style.overflowX = "";
-
-    this.#metricsObserver?.disconnect();
-    this.#metricsObserver = null;
-    if (this.#metricsProbe && this.#scroll) {
-      this.#scroll.removeChild(this.#metricsProbe);
-      this.#metricsProbe = null;
-    }
 
     this.#content.removeEventListener("click", this.#onContentClick);
     this.#scroll.removeEventListener("keydown", this.#onKeyDown);
