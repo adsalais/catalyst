@@ -222,6 +222,7 @@ const MINIMAL_CSS = `
     flex-direction: column;
     height: 100%;
     overflow: hidden;
+    position: relative;
   }
 
   .vsg-header-row {
@@ -235,6 +236,7 @@ const MINIMAL_CSS = `
     border-bottom: var(--vsg-header-border, none);
     overflow-x: auto;
     overflow-y: hidden;
+    position: relative;
 
     scrollbar-width: none;
     -ms-overflow-style: none;
@@ -401,6 +403,88 @@ const MINIMAL_CSS = `
 
   .vsg-copy-btn:active {
     background: #e0e0e0;
+  }
+
+  /* ── Column picker (absolute, top-left of header row) ── */
+  .vsg-col-picker-btn {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 28px;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--vsg-header-bg, #fff);
+    color: var(--vsg-header-color, inherit);
+    border: none;
+    border-right: 1px solid var(--vsg-header-border-color, rgba(255,255,255,0.15));
+    cursor: pointer;
+    padding: 0;
+    margin: 0;
+    box-sizing: border-box;
+    z-index: 4;
+    opacity: 0.7;
+    transition: opacity 0.15s ease, background 0.15s ease;
+  }
+
+  .vsg-col-picker-btn:hover {
+    opacity: 1;
+    background: var(--vsg-header-bg, #fff);
+    filter: brightness(0.95);
+  }
+
+  .vsg-col-picker-btn svg {
+    display: block;
+    pointer-events: none;
+  }
+
+  .vsg-col-picker-dropdown {
+    position: absolute;
+    top: 0;
+    left: 0;
+    min-width: 180px;
+    max-height: 300px;
+    overflow-y: auto;
+    background: var(--vsg-picker-bg, #fff);
+    border: 1px solid var(--vsg-picker-border, rgba(0,0,0,0.15));
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    z-index: 100;
+    padding: 4px 0;
+    display: none;
+    color: var(--vsg-picker-color, #333);
+    font-size: var(--vsg-font-size, 13px);
+  }
+
+  .vsg-col-picker-dropdown.open {
+    display: block;
+  }
+
+  .vsg-col-picker-item {
+    display: flex;
+    align-items: center;
+    padding: 6px 12px;
+    cursor: pointer;
+    user-select: none;
+    gap: 8px;
+  }
+
+  .vsg-col-picker-item:hover {
+    background: var(--vsg-picker-item-hover, rgba(0,0,0,0.04));
+  }
+
+  .vsg-col-picker-item input[type="checkbox"] {
+    margin: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .vsg-col-picker-item-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 `;
 
@@ -1275,7 +1359,11 @@ class Renderer {
 
   #headerWidthObserver;
 
-  /* Event handlers — arrow fields keep stable identity */
+  /* Column picker */
+  #colPickerBtn = null;
+  #colPickerDropdown = null;
+  #closePickerOnOutside = null;
+
   #onContentClick = (e) => this.#delegate?.onContentClick?.(e);
   #onKeyDown = (e) => this.#delegate?.onKeyDown?.(e);
   #onFocusIn = (e) => {
@@ -1286,6 +1374,7 @@ class Renderer {
     this.#syncingScroll = true;
     this.#headerRow.scrollLeft = this.#scroll.scrollLeft;
     this.#syncingScroll = false;
+    this.#closeColPicker();
   };
   #onHeaderScrollSync = () => {
     if (this.#syncingScroll) return;
@@ -1299,6 +1388,15 @@ class Renderer {
     this.scheduleWidthRelock();
   };
   #onHeaderPointerDown = (e) => this.#onResizePointerDown(e);
+
+  #onPickerBtnClick = (e) => {
+    e.stopPropagation();
+    this.#toggleColPicker();
+  };
+  #onPickerChange = (e) => this.#onPickerItemChange(e);
+  #onPickerKeyDown = (e) => {
+    if (e.key === "Escape") this.#closeColPicker();
+  };
 
   constructor(root, { rowHeightManager, cellRendererRegistry = null }) {
     this.#root = root;
@@ -1322,6 +1420,31 @@ class Renderer {
       role: "row",
       part: "header",
     });
+
+    /* Column picker button (absolutely positioned inside header row) */
+    this.#colPickerBtn = createEl(
+      "button",
+      "vsg-col-picker-btn",
+      this.#headerRow,
+      {
+        "aria-label": "Show or hide columns",
+        title: "Columns",
+        tabindex: "0",
+        "aria-haspopup": "true",
+        "aria-expanded": "false",
+      },
+    );
+    this.#colPickerBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"></path><line x1="12" y1="3" x2="12" y2="21"></line></svg>`;
+    this.#colPickerBtn.addEventListener("click", this.#onPickerBtnClick);
+
+    /* Dropdown is a child of the shadow root so it is not clipped by .vsg-root */
+    this.#colPickerDropdown = createEl(
+      "div",
+      "vsg-col-picker-dropdown",
+      this.#root,
+    );
+    this.#colPickerDropdown.addEventListener("change", this.#onPickerChange);
+
     const scroll = createEl("div", "vsg-scroll", root, {
       tabindex: "0",
       role: "rowgroup",
@@ -1700,6 +1823,7 @@ class Renderer {
       return { ...col, originalIndex: i };
     });
     this.#rebuildVisibleColumns();
+    this.#rebuildColPicker();
     this.#resetColumnLayout();
   }
 
@@ -1708,6 +1832,15 @@ class Renderer {
     else this.#hiddenKeys.delete(key);
     this.#rebuildVisibleColumns();
     this.#resetColumnLayout();
+    this.#updateColPickerCheckboxes();
+  }
+
+  getColumnVisibility() {
+    const map = new Map();
+    for (const col of this.#allColumns || []) {
+      map.set(col.key, this.#hiddenKeys.has(col.key));
+    }
+    return map;
   }
 
   setSelectable(selectable) {
@@ -1751,6 +1884,8 @@ class Renderer {
       });
     });
     this.#headerRow.appendChild(frag);
+    /* Re-attach the absolutely positioned picker button */
+    this.#headerRow.appendChild(this.#colPickerBtn);
     this.#colWidthOverrides = [];
     this.#colExplicitWidths = null;
   }
@@ -1761,6 +1896,87 @@ class Renderer {
     this.#applyColumnFlexStyles();
     this.scheduleWidthRelock();
   }
+
+  /* ── Column picker helpers ── */
+
+  #toggleColPicker() {
+    if (this.#colPickerDropdown.classList.contains("open")) {
+      this.#closeColPicker();
+    } else {
+      this.#openColPicker();
+    }
+  }
+
+  #openColPicker() {
+    const btnRect = this.#colPickerBtn.getBoundingClientRect();
+    const rootRect = this.#domRoot.getBoundingClientRect();
+    this.#colPickerDropdown.style.top = btnRect.bottom - rootRect.top + "px";
+    this.#colPickerDropdown.style.left = btnRect.left - rootRect.left + "px";
+    this.#colPickerDropdown.classList.add("open");
+    this.#colPickerBtn.setAttribute("aria-expanded", "true");
+
+    this.#closePickerOnOutside = (e) => {
+      if (
+        !this.#colPickerDropdown.contains(e.target) &&
+        e.target !== this.#colPickerBtn &&
+        !this.#colPickerBtn.contains(e.target)
+      ) {
+        this.#closeColPicker();
+      }
+    };
+    document.addEventListener("click", this.#closePickerOnOutside);
+    document.addEventListener("keydown", this.#onPickerKeyDown);
+  }
+
+  #closeColPicker() {
+    this.#colPickerDropdown.classList.remove("open");
+    this.#colPickerBtn.setAttribute("aria-expanded", "false");
+    if (this.#closePickerOnOutside) {
+      document.removeEventListener("click", this.#closePickerOnOutside);
+      this.#closePickerOnOutside = null;
+    }
+    document.removeEventListener("keydown", this.#onPickerKeyDown);
+  }
+
+  #onPickerItemChange(e) {
+    const cb = e.target.closest('.vsg-col-picker-item input[type="checkbox"]');
+    if (!cb) return;
+    const key = cb.dataset.colKey;
+    const hidden = !cb.checked;
+    this.setColumnHidden(key, hidden);
+  }
+
+  #rebuildColPicker() {
+    if (!this.#allColumns) {
+      this.#colPickerDropdown.innerHTML = "";
+      return;
+    }
+    this.#colPickerDropdown.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    for (const col of this.#allColumns) {
+      const item = createEl("label", "vsg-col-picker-item", frag);
+      const checkbox = createEl("input", null, item, {
+        type: "checkbox",
+        "data-col-key": col.key,
+      });
+      checkbox.checked = !this.#hiddenKeys.has(col.key);
+      const label = createEl("span", "vsg-col-picker-item-label", item);
+      label.textContent = col.label || col.key;
+    }
+    this.#colPickerDropdown.appendChild(frag);
+  }
+
+  #updateColPickerCheckboxes() {
+    if (!this.#colPickerDropdown) return;
+    const checkboxes = this.#colPickerDropdown.querySelectorAll(
+      'input[type="checkbox"]',
+    );
+    for (const cb of checkboxes) {
+      cb.checked = !this.#hiddenKeys.has(cb.dataset.colKey);
+    }
+  }
+
+  /* ── End column picker ── */
 
   ensurePoolSize(containerHeight, rowHeight, bufferRows) {
     if (!this.#columns || containerHeight === 0) return;
@@ -2036,6 +2252,8 @@ class Renderer {
   }
 
   suspend() {
+    this.#closeColPicker();
+
     this.#content.removeEventListener("click", this.#onContentClick);
     this.#scroll.removeEventListener("keydown", this.#onKeyDown);
     this.#scroll.removeEventListener("focusin", this.#onFocusIn);
@@ -2088,6 +2306,13 @@ class Renderer {
   }
 
   destroy() {
+    this.#closeColPicker();
+    this.#colPickerBtn?.removeEventListener("click", this.#onPickerBtnClick);
+    this.#colPickerDropdown?.removeEventListener(
+      "change",
+      this.#onPickerChange,
+    );
+
     this.#resizeAbort?.abort();
     this.#headerRow
       .querySelector(".vsg-resize-handle.active")
