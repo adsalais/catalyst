@@ -6,6 +6,10 @@ A FastAPI server powering a showcase for **`virtual-scroll-grid`** — a high-pe
 
 `static/js/virtual-scroll-grid.js` is a zero-dependency custom element (`<virtual-scroll-grid>`) that renders massive datasets efficiently by only creating DOM nodes for the visible rows. It pages data on demand from any paginated API endpoint and never requires the server to supply a total row count — the end of the dataset is discovered organically when the server returns a page shorter than `page-size`, or an empty page.
 
+### Licence
+
+This project has been coded by LLMs (Large Language Models) and is thus placed in the public domain. You are free to use, modify, distribute, and build upon this code for any purpose — commercial or otherwise — without attribution, restriction, or warranty of any kind.
+
 ### Quick Start
 
 Drop the script on your page and declare the element with a `url` pointing to a paginated API:
