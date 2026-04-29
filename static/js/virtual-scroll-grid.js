@@ -68,8 +68,8 @@
  *     fn signature: (value: any, col: ColumnDef) => string | Node
  *     Returning a DOM Node allows rich content (badges, bars, icons).
  *     The renderer is scoped to this element instance only.
- *     Built-in defaults: boolean, number.  Everything else falls back to
- *     String(value).
+ *     Built-in defaults: boolean, number, text, email, phone, status,
+ *     percent, currency, date.
  *
  *   EXPANDABLE CELLS (expand:true on a column)
  *     When a column header carries `"expand": true`, the cell value is NOT
@@ -689,8 +689,8 @@ async function copyToClipboard(text) {
  * Renderer signature:
  *   (value: any, col: ColumnDef) => string | Node
  *
- * Built-in datatypes: boolean, number.  All other values fall back to
- *   String(value).
+ * Built-in datatypes: boolean, number, text, email, phone, status,
+ *   percent, currency, date.
  *
  * Custom renderers registered here take precedence over the legacy
  * `col.type` field.  When no datatype renderer is found the classic
@@ -2294,7 +2294,7 @@ class Renderer {
     selectionModel,
     { focusedRowIndex, focusedColIndex, endReached, maxLoadedIndex },
   ) {
-    if (!this.#columns || this.#poolSize === 0) return;
+    if (!this.#columns || this.#poolSize === 0) return null;
     this.#rangeStart = rangeStart;
 
     const transform = `translateY(${Math.round(this.#rowHeightManager.getOffset(rangeStart))}px)`;
@@ -2303,6 +2303,7 @@ class Renderer {
       this.#content.style.transform = transform;
     }
 
+    const touched = new Set();
     const touchedPages = new Set();
     const pageSize = dataSource.pageSize;
 
@@ -2335,6 +2336,7 @@ class Renderer {
         state.expandSig === expandSig
       )
         continue;
+      touched.add(i);
       Object.assign(state, {
         index: rowIndex,
         pastEnd: isPastEnd,
@@ -2364,11 +2366,13 @@ class Renderer {
     }
 
     dataSource.touchPages(touchedPages);
+    return touched;
   }
 
-  measureAndReportHeights() {
+  measureAndReportHeights(touched = null) {
     let changed = false;
     for (let i = 0; i < this.#poolSize; i++) {
+      if (touched && !touched.has(i)) continue;
       const slot = this.#pool[i];
       const idx = parseInt(slot.row.dataset.index, 10);
       if (idx >= 0 && slot.row.style.visibility !== "hidden") {
@@ -2836,8 +2840,9 @@ class VirtualScrollCore {
 
   #update() {
     if (this.#destroyed) return;
-    this.#updateLayout();
-    const heightsChanged = this.#renderer.measureAndReportHeights();
+    const touched = this.#updateLayout();
+    const heightsChanged =
+      touched != null ? this.#renderer.measureAndReportHeights(touched) : false;
     if (heightsChanged) {
       this.#updateLayout();
     }
@@ -2862,7 +2867,7 @@ class VirtualScrollCore {
       endReached ? maxLoaded + 1 : -1,
     );
 
-    if (!this.#dataSource.columns) return;
+    if (!this.#dataSource.columns) return null;
 
     this.#renderer.ensurePoolSize(
       this.#viewport.clientHeight,
@@ -2871,13 +2876,18 @@ class VirtualScrollCore {
     );
 
     const rangeStart = this.#viewport.getStartRow();
-    this.#renderer.render(rangeStart, this.#dataSource, this.#selectionModel, {
-      focusedRowIndex: this.#focusedRowIndex,
-      focusedColIndex: this.#focusedColIndex,
-      endReached,
-      maxLoadedIndex: maxLoaded,
-      rowHeight: this.#rowHeightManager.defaultHeight,
-    });
+    return this.#renderer.render(
+      rangeStart,
+      this.#dataSource,
+      this.#selectionModel,
+      {
+        focusedRowIndex: this.#focusedRowIndex,
+        focusedColIndex: this.#focusedColIndex,
+        endReached,
+        maxLoadedIndex: maxLoaded,
+        rowHeight: this.#rowHeightManager.defaultHeight,
+      },
+    );
   }
 
   #prefetchVisiblePages() {
@@ -3265,6 +3275,11 @@ class VirtualScrollGrid extends HTMLElement {
 
   disconnectedCallback() {
     this.#instance?.suspend();
+  }
+
+  destroy() {
+    this.#instance?.destroy();
+    this.#instance = null;
   }
 
   attributeChangedCallback(name, oldVal, newVal) {

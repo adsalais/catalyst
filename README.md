@@ -53,7 +53,6 @@ GET /api/data?offset=200&limit=100
 | `hidden` | boolean | `false` | If `true`, the column starts hidden. Can be toggled at runtime with `setColumnHidden(key, hidden)`. |
 | `datatype` | string | — | Selects which cell renderer to use. Built-in types: `boolean`, `number`, `text`, `email`, `phone`, `status`, `percent`, `currency`, `date`, `json`. Custom types can be registered with `registerCellRenderer()`. |
 | `expand` | boolean | `false` | If `true`, the cell value is **not** rendered inline. Instead, an "Expand" toggle button is shown; clicking it opens an expansion panel below the row. Ideal for large or nested values (e.g. JSON blobs). |
-| `type` | string | — | Legacy alias for `datatype`. When both are present, `datatype` takes precedence. |
 
 **Pagination signals:**
 
