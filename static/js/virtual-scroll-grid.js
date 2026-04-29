@@ -222,6 +222,7 @@ const MINIMAL_CSS = `
     flex-direction: column;
     height: 100%;
     overflow: hidden;
+    position: relative;
   }
 
   .vsg-header-row {
@@ -401,6 +402,92 @@ const MINIMAL_CSS = `
 
   .vsg-copy-btn:active {
     background: #e0e0e0;
+  }
+
+  .vsg-header-cell-label {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .vsg-col-toggle-btn {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    margin: 0;
+    border: 1px solid rgba(0,0,0,0.15);
+    background: rgba(255,255,255,0.95);
+    color: #555;
+    border-radius: 3px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease, background 0.12s ease;
+    z-index: 4;
+    line-height: 1;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+  }
+
+  .vsg-root:has(.vsg-header-cell:first-child:hover) .vsg-col-toggle-btn,
+  .vsg-col-toggle-btn:hover,
+  .vsg-col-toggle-btn.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .vsg-col-toggle-btn:hover {
+    background: #f0f0f0;
+    color: #000;
+    border-color: rgba(0,0,0,0.25);
+  }
+
+  .vsg-col-toggle-menu {
+    position: absolute;
+    top: 28px;
+    left: 3px;
+    z-index: 10;
+    background: #fff;
+    color: #000;
+    border: 1px solid rgba(0,0,0,0.15);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    padding: 4px 0;
+    min-width: 160px;
+    max-height: 300px;
+    overflow-y: auto;
+    display: none;
+    font-size: 13px;
+  }
+
+  .vsg-col-toggle-menu.open {
+    display: block;
+  }
+
+  .vsg-col-toggle-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  .vsg-col-toggle-item:hover {
+    background: rgba(0,0,0,0.06);
+  }
+
+  .vsg-col-toggle-item input[type="checkbox"] {
+    margin: 0;
+    flex-shrink: 0;
   }
 `;
 
@@ -1270,6 +1357,8 @@ class Renderer {
   #scroll;
   #spacer;
   #content;
+  #colToggleBtn;
+  #colToggleMenu;
 
   #headerWidthObserver;
 
@@ -1298,6 +1387,27 @@ class Renderer {
   };
   #onHeaderPointerDown = (e) => this.#onResizePointerDown(e);
 
+  #onColToggleBtnClick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    this.#toggleColToggleMenu();
+  };
+
+  #onColToggleMenuChange = (e) => {
+    const cb = e.target.closest("input[type=checkbox][data-col-key]");
+    if (!cb) return;
+    const key = cb.dataset.colKey;
+    const hidden = !cb.checked;
+    this.#root.host?.setColumnHidden?.(key, hidden);
+  };
+
+  #onDocumentPointerDown = (e) => {
+    const path = e.composedPath();
+    if (path.includes(this.#colToggleBtn) || path.includes(this.#colToggleMenu))
+      return;
+    this.#closeColToggleMenu();
+  };
+
   constructor(root, { rowHeightManager, cellRendererRegistry = null }) {
     this.#root = root;
     this.#rowHeightManager = rowHeightManager;
@@ -1320,6 +1430,17 @@ class Renderer {
       role: "row",
       part: "header",
     });
+    this.#colToggleBtn = createEl("button", "vsg-col-toggle-btn", root, {
+      type: "button",
+      "aria-label": "Toggle column visibility",
+      "aria-haspopup": "menu",
+      title: "Show/hide columns",
+      tabindex: "-1",
+    });
+    this.#colToggleBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>`;
+    this.#colToggleMenu = createEl("div", "vsg-col-toggle-menu", root, {
+      role: "menu",
+    });
     const scroll = createEl("div", "vsg-scroll", root, {
       tabindex: "0",
       role: "rowgroup",
@@ -1341,6 +1462,8 @@ class Renderer {
       passive: true,
     });
     this.#headerRow.addEventListener("pointerdown", this.#onHeaderPointerDown);
+    this.#colToggleBtn.addEventListener("click", this.#onColToggleBtnClick);
+    this.#colToggleMenu.addEventListener("change", this.#onColToggleMenuChange);
 
     this.#headerWidthObserver = new ResizeObserver(this.#syncScrollbarGutter);
     this.#headerWidthObserver.observe(this.#scroll);
@@ -1633,6 +1756,10 @@ class Renderer {
   setShowHeaders(show) {
     this.#showHeaders = show;
     this.#headerRow.style.display = show ? "" : "none";
+    if (this.#colToggleBtn) {
+      this.#colToggleBtn.style.display = show ? "" : "none";
+    }
+    if (!show) this.#closeColToggleMenu();
     this.scheduleWidthRelock();
   }
 
@@ -1731,7 +1858,8 @@ class Renderer {
         part: "header-cell",
         "data-col-index": i,
       });
-      cell.textContent = col.label || col.key;
+      const label = createEl("span", "vsg-header-cell-label", cell);
+      label.textContent = col.label || col.key;
       createEl("div", "vsg-resize-handle", cell, {
         "data-col-index": i,
         "aria-hidden": "true",
@@ -1747,6 +1875,50 @@ class Renderer {
     this.#computeColumnStyles();
     this.#applyColumnFlexStyles();
     this.scheduleWidthRelock();
+  }
+
+  #toggleColToggleMenu() {
+    if (this.#colToggleMenu.classList.contains("open")) {
+      this.#closeColToggleMenu();
+    } else {
+      this.#openColToggleMenu();
+    }
+  }
+
+  #openColToggleMenu() {
+    this.#renderColToggleMenu();
+    this.#colToggleMenu.classList.add("open");
+    this.#colToggleBtn.classList.add("open");
+    document.addEventListener("pointerdown", this.#onDocumentPointerDown, true);
+  }
+
+  #closeColToggleMenu() {
+    if (!this.#colToggleMenu || !this.#colToggleMenu.classList.contains("open"))
+      return;
+    this.#colToggleMenu.classList.remove("open");
+    this.#colToggleBtn.classList.remove("open");
+    document.removeEventListener(
+      "pointerdown",
+      this.#onDocumentPointerDown,
+      true,
+    );
+  }
+
+  #renderColToggleMenu() {
+    this.#colToggleMenu.innerHTML = "";
+    if (!this.#allColumns || !this.#allColumns.length) return;
+    const frag = document.createDocumentFragment();
+    this.#allColumns.forEach((col) => {
+      const item = createEl("label", "vsg-col-toggle-item", frag);
+      const cb = createEl("input", "", item, {
+        type: "checkbox",
+        "data-col-key": col.key,
+      });
+      cb.checked = !this.#hiddenKeys.has(col.key);
+      const span = createEl("span", "", item);
+      span.textContent = col.label || col.key;
+    });
+    this.#colToggleMenu.appendChild(frag);
   }
 
   ensurePoolSize(containerHeight, rowHeight, bufferRows) {
@@ -2023,6 +2195,7 @@ class Renderer {
   }
 
   suspend() {
+    this.#closeColToggleMenu();
     this.#content.removeEventListener("click", this.#onContentClick);
     this.#scroll.removeEventListener("keydown", this.#onKeyDown);
     this.#scroll.removeEventListener("focusin", this.#onFocusIn);
@@ -2035,6 +2208,11 @@ class Renderer {
     this.#headerRow.removeEventListener(
       "pointerdown",
       this.#onHeaderPointerDown,
+    );
+    this.#colToggleBtn?.removeEventListener("click", this.#onColToggleBtnClick);
+    this.#colToggleMenu?.removeEventListener(
+      "change",
+      this.#onColToggleMenuChange,
     );
     this.#headerWidthObserver?.disconnect();
 
@@ -2077,11 +2255,17 @@ class Renderer {
       passive: true,
     });
     this.#headerRow.addEventListener("pointerdown", this.#onHeaderPointerDown);
+    this.#colToggleBtn?.addEventListener("click", this.#onColToggleBtnClick);
+    this.#colToggleMenu?.addEventListener(
+      "change",
+      this.#onColToggleMenuChange,
+    );
     this.#headerWidthObserver.observe(this.#scroll);
     this.scheduleWidthRelock();
   }
 
   destroy() {
+    this.#closeColToggleMenu();
     this.#resizeAbort?.abort();
     this.#headerRow
       .querySelector(".vsg-resize-handle.active")
@@ -2104,6 +2288,11 @@ class Renderer {
     this.#headerRow.removeEventListener(
       "pointerdown",
       this.#onHeaderPointerDown,
+    );
+    this.#colToggleBtn?.removeEventListener("click", this.#onColToggleBtnClick);
+    this.#colToggleMenu?.removeEventListener(
+      "change",
+      this.#onColToggleMenuChange,
     );
     this.#headerWidthObserver?.disconnect();
   }
