@@ -661,6 +661,24 @@ function getVal(row, col, colIndex) {
   return row[col.key];
 }
 
+async function copyToClipboard(text) {
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.cssText =
+      "position:fixed;inset-block-start:-9999px;opacity:0;pointer-events:none;";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+    } catch {}
+    ta.remove();
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* CellRendererRegistry                                               */
 /* ------------------------------------------------------------------ */
@@ -1223,15 +1241,15 @@ class DataSource extends EventEmitter {
     url.searchParams.set("offset", String(offset));
     url.searchParams.set("limit", String(this.#pageSize));
 
-    const fetchAbort = new AbortController();
-    const onBulkAbort = () => fetchAbort.abort();
-    this.#abortController.signal.addEventListener("abort", onBulkAbort, {
+    const ctrl = new AbortController();
+    const onAbort = () => ctrl.abort();
+    this.#abortController.signal.addEventListener("abort", onAbort, {
       once: true,
     });
     try {
-      return await fetch(url, { signal: fetchAbort.signal });
+      return await fetch(url, { signal: ctrl.signal });
     } finally {
-      this.#abortController.signal.removeEventListener("abort", onBulkAbort);
+      this.#abortController.signal.removeEventListener("abort", onAbort);
     }
   }
 
@@ -1393,24 +1411,18 @@ class RowHeightManager {
 
   getIndexAtOffset(offset) {
     if (offset <= 0) return 0;
-    let currentOffset = 0;
-    let blockIndex = 0;
-
-    while (true) {
-      const blockHeight = this.#getBlockHeight(blockIndex);
-      if (currentOffset + blockHeight > offset) break;
-      currentOffset += blockHeight;
-      blockIndex++;
+    let current = 0,
+      block = 0;
+    for (; ; block++) {
+      const h = this.#getBlockHeight(block);
+      if (current + h > offset) break;
+      current += h;
     }
-
-    const blockStart = blockIndex * this.#blockSize;
-    let i = blockStart;
-    while (currentOffset < offset) {
-      currentOffset += this.#heights.get(i) || this.#defaultHeight;
-      if (currentOffset >= offset) return Math.max(0, i);
-      i++;
+    let i = block * this.#blockSize;
+    for (; current < offset; i++) {
+      current += this.#heights.get(i) || this.#defaultHeight;
     }
-    return Math.max(0, i);
+    return Math.max(0, i - 1);
   }
 
   getTotalHeight(knownRowCount, endReached, extraRows = 0) {
@@ -1576,7 +1588,7 @@ class Renderer {
   #cellMetrics = null;
   #colBasis = null;
   #colGrowth = null;
-  #colExplicitWidths = null;
+  #lockedWidths = null;
 
   #resizeSheet = new CSSStyleSheet();
   #resizeAbort = null;
@@ -1652,6 +1664,22 @@ class Renderer {
     this.#closeColToggleMenu();
   };
 
+  #bindings = [
+    [() => this.#content, "click", this.#onContentClick],
+    [() => this.#scroll, "keydown", this.#onKeyDown],
+    [() => this.#scroll, "focusin", this.#onFocusIn],
+    [() => this.#scroll, "scroll", this.#onScrollSync, { passive: true }],
+    [
+      () => this.#headerRow,
+      "scroll",
+      this.#onHeaderScrollSync,
+      { passive: true },
+    ],
+    [() => this.#headerRow, "pointerdown", this.#onHeaderPointerDown],
+    [() => this.#colToggleBtn, "click", this.#onColToggleBtnClick],
+    [() => this.#colToggleMenu, "change", this.#onColToggleMenuChange],
+  ];
+
   constructor(root, { rowHeightManager, cellRendererRegistry = null }) {
     this.#root = root;
     this.#rowHeightManager = rowHeightManager;
@@ -1695,20 +1723,31 @@ class Renderer {
     this.#domRoot = root;
   }
 
-  #bindEvents() {
-    this.#content.addEventListener("click", this.#onContentClick);
-    this.#scroll.addEventListener("keydown", this.#onKeyDown);
-    this.#scroll.addEventListener("focusin", this.#onFocusIn);
-    this.#scroll.addEventListener("scroll", this.#onScrollSync, {
-      passive: true,
-    });
-    this.#headerRow.addEventListener("scroll", this.#onHeaderScrollSync, {
-      passive: true,
-    });
-    this.#headerRow.addEventListener("pointerdown", this.#onHeaderPointerDown);
-    this.#colToggleBtn.addEventListener("click", this.#onColToggleBtnClick);
-    this.#colToggleMenu.addEventListener("change", this.#onColToggleMenuChange);
+  #setBound(add) {
+    const m = add ? "addEventListener" : "removeEventListener";
+    for (const [getTarget, type, handler, opts] of this.#bindings) {
+      const target = getTarget();
+      if (target) target[m](type, handler, opts);
+    }
+  }
 
+  #teardownResize() {
+    if (this.#resizeAbort) {
+      this.#resizeAbort.abort();
+      this.#resizeAbort = null;
+    }
+    this.#headerRow
+      .querySelector(".vsg-resize-handle.active")
+      ?.classList.remove("active");
+    this.#root.host?.classList.remove("col-resizing");
+    this.#resizeSheet.replaceSync("");
+    this.#root.host?.style.removeProperty("--vsg-resize-width");
+    this.#headerRow.style.overflowX = "";
+    this.#scroll.style.overflowX = "";
+  }
+
+  #bindEvents() {
+    this.#setBound(true);
     this.#headerWidthObserver = new ResizeObserver(this.#syncScrollbarGutter);
     this.#headerWidthObserver.observe(this.#scroll);
   }
@@ -1800,9 +1839,10 @@ class Renderer {
 
   #styleCell(cell, colIndex) {
     if (!cell) return;
-    if (this.#colExplicitWidths) {
+    const locked = this.#lockedWidths?.[colIndex];
+    if (locked != null) {
       cell.style.flex = "none";
-      cell.style.width = (this.#colExplicitWidths[colIndex] || 0) + "px";
+      cell.style.width = locked + "px";
       cell.style.minWidth = "auto";
       return;
     }
@@ -1819,15 +1859,13 @@ class Renderer {
   }
 
   #getTotalColumnWidth() {
-    if (this.#colExplicitWidths) {
-      return this.#colExplicitWidths.reduce((a, b) => a + b, 0);
+    if (this.#lockedWidths) {
+      return this.#lockedWidths.reduce((a, b) => a + b, 0);
     }
     if (!this.#columns || !this.#colBasis) return 0;
     return this.#columns.reduce((sum, _, i) => {
       const override = this.#colWidthOverrides[i];
       if (override != null) return sum + override;
-      // When headers are visible use their rendered width; otherwise fall back
-      // to the computed basis (header cells have zero size when display:none).
       if (this.#showHeaders) {
         const headerCell = this.#headerRow.children[i];
         const renderedWidth = headerCell
@@ -1843,7 +1881,6 @@ class Renderer {
     if (!this.#columns) return;
     let sourceCells;
     if (!this.#showHeaders) {
-      // Headers are hidden — read widths from the first rendered data row instead
       const firstRow = this.#pool.find(
         (r) => r.row.isConnected && r.cells.length,
       );
@@ -1856,14 +1893,14 @@ class Renderer {
     const widths = sourceCells.map((cell) =>
       Math.round(cell.getBoundingClientRect().width),
     );
-    if (widths.some((w) => w === 0)) return; // not yet laid out
-    this.#colExplicitWidths = widths;
+    if (widths.some((w) => w === 0)) return;
+    this.#lockedWidths = widths;
     this.#applyColumnFlexStyles();
   }
 
   #unlockColumnWidths() {
-    if (!this.#colExplicitWidths) return;
-    this.#colExplicitWidths = null;
+    if (!this.#lockedWidths) return;
+    this.#lockedWidths = null;
     this.#applyColumnFlexStyles();
   }
 
@@ -1957,8 +1994,8 @@ class Renderer {
       Math.round(startWidth + moveEvt.clientX - startX),
     );
     host?.style.setProperty("--vsg-resize-width", `${newWidth}px`);
-    if (this.#colExplicitWidths && this.#resizeColIndex >= 0) {
-      this.#colExplicitWidths[this.#resizeColIndex] = newWidth;
+    if (this.#lockedWidths && this.#resizeColIndex >= 0) {
+      this.#lockedWidths[this.#resizeColIndex] = newWidth;
       this.#updateContentWidth(this.#getTotalColumnWidth());
     }
   }
@@ -1992,9 +2029,13 @@ class Renderer {
     host?.style.removeProperty("--vsg-resize-width");
 
     this.#resizeColIndex = -1;
-    const widths = this.#colExplicitWidths || [];
     const key = this.#columns[colIndex]?.key ?? null;
-    this.#delegate?.onColumnResize?.(colIndex, key, finalWidth, widths);
+    this.#delegate?.onColumnResize?.(
+      colIndex,
+      key,
+      finalWidth,
+      this.#lockedWidths || [],
+    );
   }
 
   setShowHeaders(show) {
@@ -2024,18 +2065,9 @@ class Renderer {
     this.#cellMetrics = null;
     this.#colBasis = null;
     this.#colGrowth = null;
-    this.#colExplicitWidths = null;
+    this.#lockedWidths = null;
 
-    this.#resizeAbort?.abort();
-    this.#resizeAbort = null;
-    this.#headerRow
-      .querySelector(".vsg-resize-handle.active")
-      ?.classList.remove("active");
-    this.#root.host?.classList.remove("col-resizing");
-    this.#resizeSheet.replaceSync("");
-    this.#root.host?.style.removeProperty("--vsg-resize-width");
-    this.#headerRow.style.overflowX = "";
-    this.#scroll.style.overflowX = "";
+    this.#teardownResize();
 
     if (this.#columns) {
       this.#computeColumnStyles();
@@ -2111,7 +2143,7 @@ class Renderer {
     });
     this.#headerRow.appendChild(frag);
     this.#colWidthOverrides = [];
-    this.#colExplicitWidths = null;
+    this.#lockedWidths = null;
   }
 
   renderHeader() {
@@ -2201,12 +2233,6 @@ class Renderer {
         cellContents.push(content);
         copyBtns.push(copyBtn);
       });
-      // Expansions container lives INSIDE .vsg-row as a flex item that
-      // takes a full line (flex-basis: 100%, order: 999). Because every
-      // cell has min-width: basis, the cells never wrap alongside this
-      // item — it reliably lands on its own line under the cells. Stays
-      // collapsed (display:none via :empty) until the user expands a
-      // cell on this row.
       const expansionsEl = createEl("div", "vsg-row-expansions", row, {
         part: "expansions",
       });
@@ -2216,8 +2242,6 @@ class Renderer {
         cellContents,
         copyBtns,
         expansionsEl,
-        // Reusable panels per column-key, to avoid reconstructing DOM on
-        // every render and to preserve any user sub-state (text selection).
         expansionPanels: new Map(),
       });
       this.#poolState.push({
@@ -2294,8 +2318,6 @@ class Renderer {
       const isFocusedRow = rowIndex === focusedRowIndex;
       const activeCellCol = isFocusedRow ? focusedColIndex : -1;
 
-      // Compute expansion signature so the pool-slot diff notices a
-      // toggled "expand:true" cell and forces a re-render of this row.
       const expandedKeys =
         hasData && !isPastEnd ? dataSource.getExpandedColKeys(rowIndex) : null;
       const expandSig = expandedKeys
@@ -2420,8 +2442,6 @@ class Renderer {
       const isExpandable = hasData && col.expand === true && rawVal != null;
 
       if (isExpandable) {
-        // Render a toggle button in place of the cell value. The value
-        // itself is shown in an inline expansion panel below the row.
         const isOpen = expandedKeys ? expandedKeys.has(col.key) : false;
         const btn = this.#ensureExpandButton(contentEl, col.key);
         btn.classList.toggle("open", isOpen);
@@ -2458,7 +2478,6 @@ class Renderer {
       else cell.removeAttribute("aria-selected");
     });
 
-    // Render expansion panels (one per expanded col-key) below the cells.
     this.#renderExpansionPanels(slot, rowData, hasData, expandedKeys);
   }
 
@@ -2505,13 +2524,11 @@ class Renderer {
       return;
     }
 
-    // Map column-key → column def (only expandable ones are valid targets).
     const colByKey = new Map();
     for (const col of this.#columns || []) {
       if (col && col.expand === true) colByKey.set(col.key, col);
     }
 
-    // Remove panels for keys no longer expanded.
     for (const key of Array.from(panels.keys())) {
       if (!expandedKeys.has(key)) {
         panels.get(key).panel.remove();
@@ -2519,8 +2536,6 @@ class Renderer {
       }
     }
 
-    // Add or update panels for currently expanded keys (preserve DOM order
-    // by matching the visible column order).
     const orderedKeys = [];
     for (const col of this.#columns || []) {
       if (col && expandedKeys.has(col.key)) orderedKeys.push(col.key);
@@ -2556,7 +2571,6 @@ class Renderer {
       }
       container.appendChild(entry.panel);
 
-      // Render the value via the existing CellRendererRegistry.
       const val = getVal(rowData, col, col.originalIndex);
       const rendered = formatCell(val, col, this.#cellRendererRegistry);
       if (rendered instanceof Node) {
@@ -2604,105 +2618,26 @@ class Renderer {
 
   suspend() {
     this.#closeColToggleMenu();
-    this.#content.removeEventListener("click", this.#onContentClick);
-    this.#scroll.removeEventListener("keydown", this.#onKeyDown);
-    this.#scroll.removeEventListener("focusin", this.#onFocusIn);
-    this.#scroll.removeEventListener("scroll", this.#onScrollSync, {
-      passive: true,
-    });
-    this.#headerRow.removeEventListener("scroll", this.#onHeaderScrollSync, {
-      passive: true,
-    });
-    this.#headerRow.removeEventListener(
-      "pointerdown",
-      this.#onHeaderPointerDown,
-    );
-    this.#colToggleBtn?.removeEventListener("click", this.#onColToggleBtnClick);
-    this.#colToggleMenu?.removeEventListener(
-      "change",
-      this.#onColToggleMenuChange,
-    );
-    this.#headerWidthObserver?.disconnect();
-
-    if (this.#resizeAbort) {
-      this.#resizeAbort.abort();
-      this.#resizeAbort = null;
-      this.#headerRow
-        .querySelector(".vsg-resize-handle.active")
-        ?.classList.remove("active");
-      this.#root.host?.classList.remove("col-resizing");
-      this.#resizeSheet.replaceSync("");
-      this.#root.host?.style.removeProperty("--vsg-resize-width");
-      this.#headerRow.style.overflowX = "";
-      this.#scroll.style.overflowX = "";
+    this.#setBound(false);
+    this.#headerWidthObserver.disconnect();
+    this.#teardownResize();
+    if (this.#widthLockRaf) {
+      cancelAnimationFrame(this.#widthLockRaf);
+      this.#widthLockRaf = null;
     }
-
-    this.#content.removeEventListener("click", this.#onContentClick);
-    this.#scroll.removeEventListener("keydown", this.#onKeyDown);
-    this.#scroll.removeEventListener("focusin", this.#onFocusIn);
-    this.#scroll.removeEventListener("scroll", this.#onScrollSync, {
-      passive: true,
-    });
-    this.#headerRow.removeEventListener("scroll", this.#onHeaderScrollSync, {
-      passive: true,
-    });
-    this.#headerRow.removeEventListener(
-      "pointerdown",
-      this.#onHeaderPointerDown,
-    );
   }
 
   resume() {
-    this.#content.addEventListener("click", this.#onContentClick);
-    this.#scroll.addEventListener("keydown", this.#onKeyDown);
-    this.#scroll.addEventListener("focusin", this.#onFocusIn);
-    this.#scroll.addEventListener("scroll", this.#onScrollSync, {
-      passive: true,
-    });
-    this.#headerRow.addEventListener("scroll", this.#onHeaderScrollSync, {
-      passive: true,
-    });
-    this.#headerRow.addEventListener("pointerdown", this.#onHeaderPointerDown);
-    this.#colToggleBtn?.addEventListener("click", this.#onColToggleBtnClick);
-    this.#colToggleMenu?.addEventListener(
-      "change",
-      this.#onColToggleMenuChange,
-    );
+    this.#setBound(true);
     this.#headerWidthObserver.observe(this.#scroll);
     this.scheduleWidthRelock();
   }
 
   destroy() {
     this.#closeColToggleMenu();
-    this.#resizeAbort?.abort();
-    this.#headerRow
-      .querySelector(".vsg-resize-handle.active")
-      ?.classList.remove("active");
-    this.#root.host?.classList.remove("col-resizing");
-    this.#resizeSheet.replaceSync("");
-    this.#root.host?.style.removeProperty("--vsg-resize-width");
-    this.#headerRow.style.overflowX = "";
-    this.#scroll.style.overflowX = "";
-
-    this.#content.removeEventListener("click", this.#onContentClick);
-    this.#scroll.removeEventListener("keydown", this.#onKeyDown);
-    this.#scroll.removeEventListener("focusin", this.#onFocusIn);
-    this.#scroll.removeEventListener("scroll", this.#onScrollSync, {
-      passive: true,
-    });
-    this.#headerRow.removeEventListener("scroll", this.#onHeaderScrollSync, {
-      passive: true,
-    });
-    this.#headerRow.removeEventListener(
-      "pointerdown",
-      this.#onHeaderPointerDown,
-    );
-    this.#colToggleBtn?.removeEventListener("click", this.#onColToggleBtnClick);
-    this.#colToggleMenu?.removeEventListener(
-      "change",
-      this.#onColToggleMenuChange,
-    );
-    this.#headerWidthObserver?.disconnect();
+    this.#setBound(false);
+    this.#teardownResize();
+    this.#headerWidthObserver.disconnect();
   }
 }
 
@@ -2727,6 +2662,50 @@ class VirtualScrollCore {
   #viewport;
   #dataSource;
   #selectionModel;
+
+  static #NAV_KEYS = new Map([
+    ["ArrowDown", (s, e) => s.#goRow(s.#clampRow(s.#focusedRowIndex + 1))],
+    ["ArrowUp", (s, e) => s.#goRow(s.#clampRow(s.#focusedRowIndex - 1))],
+    [
+      "ArrowRight",
+      (s, e) =>
+        s.#goCol(Math.min(s.#renderer.columnCount - 1, s.#focusedColIndex + 1)),
+    ],
+    ["ArrowLeft", (s, e) => s.#goCol(Math.max(0, s.#focusedColIndex - 1))],
+    [
+      "PageDown",
+      (s, e) => s.#goRow(s.#clampRow(s.#focusedRowIndex + s.#pageRows())),
+    ],
+    [
+      "PageUp",
+      (s, e) => s.#goRow(s.#clampRow(s.#focusedRowIndex - s.#pageRows())),
+    ],
+    [
+      "Home",
+      (s, e) => {
+        if (e.ctrlKey) {
+          s.#focusedRowIndex = 0;
+          s.#focusedColIndex = 0;
+          s.#viewport.scrollIntoView(0);
+        } else s.#goCol(0);
+      },
+    ],
+    [
+      "End",
+      (s, e) => {
+        const lastRow = s.#lastNavigableRow;
+        const lastCol = s.#renderer.columnCount - 1;
+        if (e.ctrlKey) {
+          s.#focusedRowIndex = lastRow;
+          s.#focusedColIndex = lastCol;
+          s.#viewport.scrollIntoView(lastRow);
+        } else s.#goCol(lastCol);
+      },
+    ],
+    ["Enter", (s, e) => s.#toggleFocusSelection(e)],
+    [" ", (s, e) => s.#toggleFocusSelection(e)],
+    ["Escape", (s, e) => s.#selectionModel.clear()],
+  ]);
 
   constructor(root, options) {
     this.#root = root;
@@ -2940,25 +2919,7 @@ class VirtualScrollCore {
     }
   }
 
-  async #copyToClipboard(text) {
-    if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch (err) {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0;";
-      document.body.appendChild(ta);
-      ta.select();
-      try {
-        document.execCommand("copy");
-      } catch (e) {}
-      document.body.removeChild(ta);
-    }
-  }
-
   #onContentClick(e) {
-    // Expand / collapse toggle on an "expand:true" cell.
     const expandBtn = e.target.closest(".vsg-expand-btn");
     if (expandBtn) {
       e.stopPropagation();
@@ -2970,7 +2931,6 @@ class VirtualScrollCore {
       return;
     }
 
-    // Inline "Collapse ✕" button inside an open expansion panel.
     const expansionClose = e.target.closest(".vsg-row-expansion-close");
     if (expansionClose) {
       e.stopPropagation();
@@ -2982,13 +2942,10 @@ class VirtualScrollCore {
       return;
     }
 
-    // Clicks inside an expansion panel must not toggle row selection —
-    // they are user interactions with the rendered JSON / rich content.
     if (e.target.closest(".vsg-row-expansion")) {
       return;
     }
 
-    // Copy button click
     const copyBtn = e.target.closest(".vsg-copy-btn");
     if (copyBtn) {
       e.stopPropagation();
@@ -2997,11 +2954,10 @@ class VirtualScrollCore {
       const text = content
         ? content.textContent || copyBtn.dataset.value || ""
         : copyBtn.dataset.value || "";
-      this.#copyToClipboard(text);
+      copyToClipboard(text);
       return;
     }
 
-    // If the user is actively selecting text, don't toggle row selection
     const selection = window.getSelection();
     if (selection && !selection.isCollapsed) {
       const range = selection.getRangeAt(0);
@@ -3021,6 +2977,51 @@ class VirtualScrollCore {
     this.#scheduleUpdate();
   }
 
+  get #lastNavigableRow() {
+    return Math.max(
+      0,
+      this.#dataSource.isEndReached
+        ? this.#dataSource.maxLoadedIndex
+        : this.#dataSource.maxLoadedIndex + this.#dataSource.pageSize * 3,
+    );
+  }
+
+  #clampRow(i) {
+    return Math.max(0, Math.min(this.#lastNavigableRow, i));
+  }
+  #goRow(i) {
+    if (i !== this.#focusedRowIndex) {
+      this.#focusedRowIndex = i;
+      this.#viewport.scrollIntoView(i);
+    }
+  }
+  #goCol(i) {
+    if (i !== this.#focusedColIndex) this.#focusedColIndex = i;
+  }
+
+  #pageRows() {
+    const start = this.#rowHeightManager.getIndexAtOffset(
+      this.#viewport.scrollTop,
+    );
+    const end = this.#rowHeightManager.getIndexAtOffset(
+      this.#viewport.scrollTop + this.#viewport.clientHeight,
+    );
+    return Math.max(1, end - start - 1);
+  }
+
+  #toggleFocusSelection(e) {
+    if (this.#focusedRowIndex <= this.#dataSource.maxLoadedIndex) {
+      this.#selectionModel.toggleRowSelection(
+        this.#focusedRowIndex,
+        {
+          ctrlKey: e.ctrlKey || e.metaKey,
+          shiftKey: e.shiftKey,
+        },
+        (idx) => this.#dataSource.getRow(idx),
+      );
+    }
+  }
+
   #onKeyDown(e) {
     if (!this.#dataSource.columns) return;
     if (e.repeat) {
@@ -3032,94 +3033,10 @@ class VirtualScrollCore {
         this.#keyRepeatRaf = null;
       });
     }
-
-    const lastRow = Math.max(
-      0,
-      this.#dataSource.isEndReached
-        ? this.#dataSource.maxLoadedIndex
-        : this.#dataSource.maxLoadedIndex + this.#dataSource.pageSize * 3,
-    );
-    const colCount = this.#renderer.columnCount;
-
-    const goRow = (next) => {
-      if (next !== this.#focusedRowIndex) {
-        this.#focusedRowIndex = next;
-        this.#viewport.scrollIntoView(next);
-      }
-    };
-    const goCol = (next) => {
-      if (next !== this.#focusedColIndex) this.#focusedColIndex = next;
-    };
-
-    const pageRows = () => {
-      const startIdx = this.#rowHeightManager.getIndexAtOffset(
-        this.#viewport.scrollTop,
-      );
-      const endIdx = this.#rowHeightManager.getIndexAtOffset(
-        this.#viewport.scrollTop + this.#viewport.clientHeight,
-      );
-      return Math.max(1, endIdx - startIdx - 1);
-    };
-
-    switch (e.key) {
-      case "ArrowDown":
-        e.preventDefault();
-        goRow(Math.min(lastRow, this.#focusedRowIndex + 1));
-        break;
-      case "ArrowUp":
-        e.preventDefault();
-        goRow(Math.max(0, this.#focusedRowIndex - 1));
-        break;
-      case "ArrowRight":
-        e.preventDefault();
-        goCol(Math.min(colCount - 1, this.#focusedColIndex + 1));
-        break;
-      case "ArrowLeft":
-        e.preventDefault();
-        goCol(Math.max(0, this.#focusedColIndex - 1));
-        break;
-      case "PageDown":
-        e.preventDefault();
-        goRow(Math.min(lastRow, this.#focusedRowIndex + pageRows()));
-        break;
-      case "PageUp":
-        e.preventDefault();
-        goRow(Math.max(0, this.#focusedRowIndex - pageRows()));
-        break;
-      case "Home":
-        e.preventDefault();
-        if (e.ctrlKey) {
-          this.#focusedRowIndex = 0;
-          this.#focusedColIndex = 0;
-          this.#viewport.scrollIntoView(0);
-        } else this.#focusedColIndex = 0;
-        break;
-      case "End":
-        e.preventDefault();
-        if (e.ctrlKey) {
-          this.#focusedRowIndex = lastRow;
-          this.#focusedColIndex = colCount - 1;
-          this.#viewport.scrollIntoView(lastRow);
-        } else this.#focusedColIndex = colCount - 1;
-        break;
-      case "Enter":
-      case " ":
-        e.preventDefault();
-        if (this.#focusedRowIndex <= this.#dataSource.maxLoadedIndex) {
-          this.#selectionModel.toggleRowSelection(
-            this.#focusedRowIndex,
-            { ctrlKey: e.ctrlKey || e.metaKey, shiftKey: e.shiftKey },
-            (idx) => this.#dataSource.getRow(idx),
-          );
-        }
-        break;
-      case "Escape":
-        e.preventDefault();
-        this.#selectionModel.clear();
-        break;
-      default:
-        return;
-    }
+    const action = VirtualScrollCore.#NAV_KEYS.get(e.key);
+    if (!action) return;
+    e.preventDefault();
+    action(this, e);
     this.#scheduleUpdate();
   }
 
