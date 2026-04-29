@@ -71,6 +71,22 @@
  *     Built-in defaults: boolean, number, text, email, phone, status,
  *     percent, currency, date.
  *
+ *   EXPANDABLE CELLS (expand:true on a column)
+ *     When a column header carries `"expand": true`, the cell value is NOT
+ *     rendered in-line. Instead the grid places an "Expand" toggle button
+ *     in the cell. Clicking the button opens an inline expansion panel
+ *     below the row (one dedicated panel per expanded column; two expanded
+ *     columns on the same row produce two stacked panels). The panel
+ *     renders the underlying value through the same CellRendererRegistry —
+ *     so a `datatype: "json"` renderer can produce a rich, nested DOM
+ *     tree for a complex JSON blob.
+ *
+ *     Expansion state is stored alongside the page in the LRU cache: it
+ *     survives scrolling the row out of the viewport, but is dropped when
+ *     the page itself is evicted from the cache (or the page is replaced
+ *     by a reload). The toggle button is exposed as `::part(expand-btn)`
+ *     and can be styled freely from the light DOM.
+ *
  *   setColumnHidden(key, hidden)
  *     Hide or unhide a column by its key. Hidden columns are removed from
  *     the header and data rows but remain present in selection data.
@@ -148,10 +164,16 @@
  * STYLING — CSS PARTS  (pierce the shadow boundary from the light DOM)
  * ─────────────────────────────────────────────────────────────────────────
  *
- *   virtual-scroll-grid::part(header)      — header row container
- *   virtual-scroll-grid::part(header-cell) — individual header cell
- *   virtual-scroll-grid::part(row)         — data row
- *   virtual-scroll-grid::part(cell)        — data cell
+ *   virtual-scroll-grid::part(header)           — header row container
+ *   virtual-scroll-grid::part(header-cell)      — individual header cell
+ *   virtual-scroll-grid::part(row)              — data row
+ *   virtual-scroll-grid::part(cell)             — data cell
+ *   virtual-scroll-grid::part(expand-btn)       — "Expand / Collapse" toggle
+ *   virtual-scroll-grid::part(expansions)       — expansion container (per row)
+ *   virtual-scroll-grid::part(expansion)        — a single expansion panel
+ *   virtual-scroll-grid::part(expansion-label)  — small header label of a panel
+ *   virtual-scroll-grid::part(expansion-close)  — "Collapse ✕" button inside panel
+ *   virtual-scroll-grid::part(expansion-content)— content wrapper (rendered value)
  *
  *   Example:
  *     virtual-scroll-grid::part(header) { background: #1a1a1a; color: #fff; }
@@ -321,6 +343,7 @@ const MINIMAL_CSS = `
 
   .vsg-row {
     display: flex;
+    flex-wrap: wrap;
     box-sizing: border-box;
     width: 100%;
     background: var(--vsg-row-bg, transparent);
@@ -489,6 +512,124 @@ const MINIMAL_CSS = `
     margin: 0;
     flex-shrink: 0;
   }
+
+  /* ── Expandable cells (datatype:json with expand:true) ─────────── */
+
+  .vsg-expand-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    font-family: inherit;
+    font-size: var(--vsg-expand-btn-font-size, 11px);
+    font-weight: 500;
+    line-height: 1.2;
+    color: var(--vsg-expand-btn-color, #374151);
+    background: var(--vsg-expand-btn-bg, rgba(255,255,255,0.9));
+    border: 1px solid var(--vsg-expand-btn-border, rgba(0,0,0,0.2));
+    border-radius: var(--vsg-expand-btn-radius, 4px);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  .vsg-expand-btn:hover {
+    background: var(--vsg-expand-btn-bg-hover, #f3f4f6);
+    color: var(--vsg-expand-btn-color-hover, #111827);
+  }
+
+  .vsg-expand-btn.open {
+    background: var(--vsg-expand-btn-bg-open, #dbeafe);
+    color: var(--vsg-expand-btn-color-open, #1e40af);
+    border-color: var(--vsg-expand-btn-border-open, #93c5fd);
+  }
+
+  .vsg-expand-btn-chevron {
+    display: inline-block;
+    transition: transform 0.15s ease;
+    font-size: 0.9em;
+    line-height: 1;
+  }
+
+  .vsg-expand-btn.open .vsg-expand-btn-chevron {
+    transform: rotate(90deg);
+  }
+
+  .vsg-row-expansions {
+    /* Flex item inside .vsg-row (flex-wrap: wrap) that takes a full line
+       of its own — cells with min-width: basis prevent them from wrapping
+       with this item, so this reliably lands under all the cells. */
+    flex: 1 0 100%;
+    order: 999;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    background: var(--vsg-expansion-bg, rgba(0,0,0,0.03));
+    border-top: 1px solid var(--vsg-row-border-color, rgba(0,0,0,0.06));
+  }
+
+  .vsg-row-expansions:empty {
+    display: none;
+  }
+
+  .vsg-row-expansion {
+    padding: var(--vsg-expansion-padding, 10px 14px);
+    border-bottom: 1px dashed var(--vsg-row-border-color, rgba(0,0,0,0.06));
+    box-sizing: border-box;
+    min-width: 0;
+    /* Sticky-fit to the viewport so the panel stays visible while the
+       user scrolls horizontally through wide rows. --vsg-viewport-width
+       is updated in JS by #syncScrollbarGutter whenever the scroll
+       container is resized. */
+    position: sticky;
+    left: 0;
+    width: var(--vsg-viewport-width, 100%);
+    max-width: 100%;
+  }
+
+  .vsg-row-expansion:last-child {
+    border-bottom: none;
+  }
+
+  .vsg-row-expansion-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .vsg-row-expansion-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--vsg-expansion-label-color, #6b7280);
+  }
+
+  .vsg-row-expansion-close {
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--vsg-expansion-close-color, #6b7280);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    padding: 1px 6px;
+    cursor: pointer;
+  }
+
+  .vsg-row-expansion-close:hover {
+    background: rgba(0,0,0,0.05);
+    color: var(--vsg-expansion-close-color-hover, #111827);
+  }
+
+  .vsg-row-expansion-content {
+    font-size: inherit;
+    color: inherit;
+  }
 `;
 
 /* ------------------------------------------------------------------ */
@@ -626,6 +767,10 @@ class EventEmitter {
 class PageLRUCache {
   #maxPages;
   #pages = new Map();
+  // Per-page expansion state: Map<pageIndex, Map<rowIndex, Set<colKey>>>.
+  // Stored alongside the page so eviction drops the expansions with it —
+  // giving the documented "survives scroll, dies with cache eviction" behaviour.
+  #expansions = new Map();
 
   constructor(maxPages = DEFAULT_CACHE_SIZE) {
     this.#maxPages = maxPages;
@@ -633,15 +778,25 @@ class PageLRUCache {
 
   setMaxPages(maxPages) {
     this.#maxPages = maxPages;
-    while (this.#pages.size > this.#maxPages)
-      this.#pages.delete(this.#pages.keys().next().value);
+    while (this.#pages.size > this.#maxPages) {
+      const key = this.#pages.keys().next().value;
+      this.#pages.delete(key);
+      this.#expansions.delete(key);
+    }
   }
 
   setPage(pageIndex, rows) {
+    if (this.#pages.has(pageIndex)) {
+      // Replacing an existing page resets its expansion state.
+      this.#expansions.delete(pageIndex);
+    }
     this.#pages.delete(pageIndex);
     this.#pages.set(pageIndex, rows);
-    if (this.#pages.size > this.#maxPages)
-      this.#pages.delete(this.#pages.keys().next().value);
+    if (this.#pages.size > this.#maxPages) {
+      const evict = this.#pages.keys().next().value;
+      this.#pages.delete(evict);
+      this.#expansions.delete(evict);
+    }
   }
 
   getRow(rowIndex, pageSize) {
@@ -668,6 +823,58 @@ class PageLRUCache {
 
   clear() {
     this.#pages.clear();
+    this.#expansions.clear();
+  }
+
+  /* ── Expansion state API ─────────────────────────────────────────── */
+
+  isCellExpanded(rowIndex, pageSize, colKey) {
+    const pageIndex = Math.floor(rowIndex / pageSize);
+    if (!this.#pages.has(pageIndex)) return false;
+    const pageExp = this.#expansions.get(pageIndex);
+    if (!pageExp) return false;
+    const rowExp = pageExp.get(rowIndex);
+    return rowExp ? rowExp.has(colKey) : false;
+  }
+
+  setCellExpanded(rowIndex, pageSize, colKey, expanded) {
+    const pageIndex = Math.floor(rowIndex / pageSize);
+    // Only track expansions for pages currently in cache.
+    if (!this.#pages.has(pageIndex)) return false;
+
+    if (expanded) {
+      let pageExp = this.#expansions.get(pageIndex);
+      if (!pageExp) {
+        pageExp = new Map();
+        this.#expansions.set(pageIndex, pageExp);
+      }
+      let rowExp = pageExp.get(rowIndex);
+      if (!rowExp) {
+        rowExp = new Set();
+        pageExp.set(rowIndex, rowExp);
+      }
+      if (rowExp.has(colKey)) return false;
+      rowExp.add(colKey);
+      return true;
+    }
+
+    const pageExp = this.#expansions.get(pageIndex);
+    if (!pageExp) return false;
+    const rowExp = pageExp.get(rowIndex);
+    if (!rowExp || !rowExp.has(colKey)) return false;
+    rowExp.delete(colKey);
+    if (rowExp.size === 0) pageExp.delete(rowIndex);
+    if (pageExp.size === 0) this.#expansions.delete(pageIndex);
+    return true;
+  }
+
+  getExpandedColKeys(rowIndex, pageSize) {
+    const pageIndex = Math.floor(rowIndex / pageSize);
+    if (!this.#pages.has(pageIndex)) return null;
+    const pageExp = this.#expansions.get(pageIndex);
+    if (!pageExp) return null;
+    const rowExp = pageExp.get(rowIndex);
+    return rowExp && rowExp.size > 0 ? rowExp : null;
   }
 }
 
@@ -922,6 +1129,33 @@ class DataSource extends EventEmitter {
 
   getRow(index) {
     return this.#cache.getRow(index, this.#pageSize);
+  }
+
+  /* ── Expansion state passthrough ─────────────────────────────────── */
+
+  isCellExpanded(rowIndex, colKey) {
+    return this.#cache.isCellExpanded(rowIndex, this.#pageSize, colKey);
+  }
+
+  setCellExpanded(rowIndex, colKey, expanded) {
+    const changed = this.#cache.setCellExpanded(
+      rowIndex,
+      this.#pageSize,
+      colKey,
+      !!expanded,
+    );
+    if (changed)
+      this.emit("expansionChange", { rowIndex, colKey, expanded: !!expanded });
+    return changed;
+  }
+
+  toggleCellExpanded(rowIndex, colKey) {
+    const cur = this.#cache.isCellExpanded(rowIndex, this.#pageSize, colKey);
+    return this.setCellExpanded(rowIndex, colKey, !cur);
+  }
+
+  getExpandedColKeys(rowIndex) {
+    return this.#cache.getExpandedColKeys(rowIndex, this.#pageSize);
   }
 
   hasPage(pageIndex) {
@@ -1383,6 +1617,16 @@ class Renderer {
   #syncScrollbarGutter = () => {
     const gutter = this.#scroll.offsetWidth - this.#scroll.clientWidth;
     this.#headerRow.style.width = gutter > 0 ? `calc(100% - ${gutter}px)` : "";
+    // Expose the viewport's inner width so sticky expansion panels
+    // (rendered under rows for expand:true cells) can fit exactly the
+    // visible area instead of the full min-content row width.
+    const viewportWidth = this.#scroll.clientWidth;
+    if (viewportWidth > 0) {
+      this.#domRoot.style.setProperty(
+        "--vsg-viewport-width",
+        `${viewportWidth}px`,
+      );
+    }
     this.scheduleWidthRelock();
   };
   #onHeaderPointerDown = (e) => this.#onResizePointerDown(e);
@@ -1957,7 +2201,25 @@ class Renderer {
         cellContents.push(content);
         copyBtns.push(copyBtn);
       });
-      this.#pool.push({ row, cells, cellContents, copyBtns });
+      // Expansions container lives INSIDE .vsg-row as a flex item that
+      // takes a full line (flex-basis: 100%, order: 999). Because every
+      // cell has min-width: basis, the cells never wrap alongside this
+      // item — it reliably lands on its own line under the cells. Stays
+      // collapsed (display:none via :empty) until the user expands a
+      // cell on this row.
+      const expansionsEl = createEl("div", "vsg-row-expansions", row, {
+        part: "expansions",
+      });
+      this.#pool.push({
+        row,
+        cells,
+        cellContents,
+        copyBtns,
+        expansionsEl,
+        // Reusable panels per column-key, to avoid reconstructing DOM on
+        // every render and to preserve any user sub-state (text selection).
+        expansionPanels: new Map(),
+      });
       this.#poolState.push({
         index: -2,
         pastEnd: false,
@@ -1966,6 +2228,7 @@ class Renderer {
         focused: false,
         focusedCol: -1,
         selectable: false,
+        expandSig: "",
       });
     }
     this.#content.appendChild(frag);
@@ -2031,6 +2294,14 @@ class Renderer {
       const isFocusedRow = rowIndex === focusedRowIndex;
       const activeCellCol = isFocusedRow ? focusedColIndex : -1;
 
+      // Compute expansion signature so the pool-slot diff notices a
+      // toggled "expand:true" cell and forces a re-render of this row.
+      const expandedKeys =
+        hasData && !isPastEnd ? dataSource.getExpandedColKeys(rowIndex) : null;
+      const expandSig = expandedKeys
+        ? Array.from(expandedKeys).sort().join("\u0001")
+        : "";
+
       if (
         state.index === rowIndex &&
         state.pastEnd === isPastEnd &&
@@ -2038,7 +2309,8 @@ class Renderer {
         state.selected === selected &&
         state.focused === isFocusedRow &&
         state.focusedCol === activeCellCol &&
-        state.selectable === this.#selectable
+        state.selectable === this.#selectable &&
+        state.expandSig === expandSig
       )
         continue;
       Object.assign(state, {
@@ -2049,6 +2321,7 @@ class Renderer {
         focused: isFocusedRow,
         focusedCol: activeCellCol,
         selectable: this.#selectable,
+        expandSig,
       });
 
       if (isPastEnd) {
@@ -2064,6 +2337,7 @@ class Renderer {
         selected,
         isFocusedRow,
         focusedColIndex,
+        expandedKeys,
       );
     }
 
@@ -2105,6 +2379,10 @@ class Renderer {
       cell.classList.remove("focused-cell");
       cell.removeAttribute("aria-selected");
     });
+    if (slot.expansionsEl.childNodes.length > 0) {
+      slot.expansionsEl.replaceChildren();
+      slot.expansionPanels.clear();
+    }
   }
 
   #renderDataSlot(
@@ -2115,6 +2393,7 @@ class Renderer {
     selected,
     isFocusedRow,
     focusedColIndex,
+    expandedKeys,
   ) {
     slot.row.style.visibility = "";
     slot.row.dataset.index = String(rowIndex);
@@ -2134,36 +2413,164 @@ class Renderer {
       if (!col) return;
       const contentEl = slot.cellContents[ci];
       const copyBtn = slot.copyBtns[ci];
-      const rendered = hasData
-        ? formatCell(
-            getVal(rowData, col, col.originalIndex),
-            col,
-            this.#cellRendererRegistry,
-          )
-        : "";
+      const rawVal = hasData
+        ? getVal(rowData, col, col.originalIndex)
+        : undefined;
 
-      if (rendered instanceof Node) {
-        if (contentEl._lastVal !== rendered) {
-          contentEl.replaceChildren(rendered);
-          contentEl._lastVal = rendered;
-        }
+      const isExpandable = hasData && col.expand === true && rawVal != null;
+
+      if (isExpandable) {
+        // Render a toggle button in place of the cell value. The value
+        // itself is shown in an inline expansion panel below the row.
+        const isOpen = expandedKeys ? expandedKeys.has(col.key) : false;
+        const btn = this.#ensureExpandButton(contentEl, col.key);
+        btn.classList.toggle("open", isOpen);
+        btn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+        const label = isOpen ? "Collapse" : "Expand";
+        btn.dataset.label = label;
+        btn.lastChild.textContent = label;
+        copyBtn.style.display = "none";
+        copyBtn.dataset.value = "";
       } else {
-        if (contentEl._lastVal !== rendered) {
-          contentEl.textContent = rendered;
-          contentEl._lastVal = rendered;
-        }
-      }
+        const rendered = hasData
+          ? formatCell(rawVal, col, this.#cellRendererRegistry)
+          : "";
 
-      copyBtn.style.display = hasData && rendered !== "" ? "" : "none";
-      copyBtn.dataset.value = hasData
-        ? String(getVal(rowData, col, col.originalIndex) ?? "")
-        : "";
+        if (rendered instanceof Node) {
+          if (contentEl._lastVal !== rendered) {
+            contentEl.replaceChildren(rendered);
+            contentEl._lastVal = rendered;
+          }
+        } else {
+          if (contentEl._lastVal !== rendered) {
+            contentEl.textContent = rendered;
+            contentEl._lastVal = rendered;
+          }
+        }
+
+        copyBtn.style.display = hasData && rendered !== "" ? "" : "none";
+        copyBtn.dataset.value = hasData ? String(rawVal ?? "") : "";
+      }
 
       const isFocusedCell = isFocusedRow && ci === focusedColIndex;
       cell.classList.toggle("focused-cell", isFocusedCell);
       if (isFocusedCell) cell.setAttribute("aria-selected", "true");
       else cell.removeAttribute("aria-selected");
     });
+
+    // Render expansion panels (one per expanded col-key) below the cells.
+    this.#renderExpansionPanels(slot, rowData, hasData, expandedKeys);
+  }
+
+  /** Replace the cell's content with a reusable expand toggle button. */
+  #ensureExpandButton(contentEl, colKey) {
+    const existing = contentEl.firstChild;
+    if (
+      existing &&
+      existing.nodeType === 1 &&
+      existing.classList?.contains("vsg-expand-btn") &&
+      existing.dataset.colKey === colKey
+    ) {
+      return existing;
+    }
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "vsg-expand-btn";
+    btn.setAttribute("part", "expand-btn");
+    btn.setAttribute("tabindex", "-1");
+    btn.dataset.colKey = colKey;
+    const chev = document.createElement("span");
+    chev.className = "vsg-expand-btn-chevron";
+    chev.textContent = "\u25B6"; // ▶
+    chev.setAttribute("aria-hidden", "true");
+    const lbl = document.createElement("span");
+    lbl.className = "vsg-expand-btn-label";
+    lbl.textContent = "Expand";
+    btn.appendChild(chev);
+    btn.appendChild(lbl);
+    contentEl.replaceChildren(btn);
+    contentEl._lastVal = btn;
+    return btn;
+  }
+
+  #renderExpansionPanels(slot, rowData, hasData, expandedKeys) {
+    const container = slot.expansionsEl;
+    const panels = slot.expansionPanels;
+
+    if (!hasData || !expandedKeys || expandedKeys.size === 0) {
+      if (container.childNodes.length > 0) {
+        container.replaceChildren();
+        panels.clear();
+      }
+      return;
+    }
+
+    // Map column-key → column def (only expandable ones are valid targets).
+    const colByKey = new Map();
+    for (const col of this.#columns || []) {
+      if (col && col.expand === true) colByKey.set(col.key, col);
+    }
+
+    // Remove panels for keys no longer expanded.
+    for (const key of Array.from(panels.keys())) {
+      if (!expandedKeys.has(key)) {
+        panels.get(key).panel.remove();
+        panels.delete(key);
+      }
+    }
+
+    // Add or update panels for currently expanded keys (preserve DOM order
+    // by matching the visible column order).
+    const orderedKeys = [];
+    for (const col of this.#columns || []) {
+      if (col && expandedKeys.has(col.key)) orderedKeys.push(col.key);
+    }
+
+    for (const key of orderedKeys) {
+      const col = colByKey.get(key);
+      if (!col) continue;
+      let entry = panels.get(key);
+      if (!entry) {
+        const panel = createEl("div", "vsg-row-expansion", null, {
+          part: "expansion",
+          "data-col-key": key,
+        });
+        const header = createEl("div", "vsg-row-expansion-header", panel);
+        const label = createEl("div", "vsg-row-expansion-label", header, {
+          part: "expansion-label",
+        });
+        label.textContent = col.label || col.key;
+        const close = createEl("button", "vsg-row-expansion-close", header, {
+          type: "button",
+          part: "expansion-close",
+          tabindex: "-1",
+          "aria-label": "Collapse",
+        });
+        close.dataset.colKey = key;
+        close.textContent = "Collapse ✕";
+        const content = createEl("div", "vsg-row-expansion-content", panel, {
+          part: "expansion-content",
+        });
+        entry = { panel, content, lastVal: null };
+        panels.set(key, entry);
+      }
+      container.appendChild(entry.panel);
+
+      // Render the value via the existing CellRendererRegistry.
+      const val = getVal(rowData, col, col.originalIndex);
+      const rendered = formatCell(val, col, this.#cellRendererRegistry);
+      if (rendered instanceof Node) {
+        if (entry.lastVal !== rendered) {
+          entry.content.replaceChildren(rendered);
+          entry.lastVal = rendered;
+        }
+      } else {
+        if (entry.lastVal !== rendered) {
+          entry.content.textContent = rendered;
+          entry.lastVal = rendered;
+        }
+      }
+    }
   }
 
   getRowIndexFromEventTarget(target) {
@@ -2190,6 +2597,7 @@ class Renderer {
         focused: false,
         focusedCol: -1,
         selectable: false,
+        expandSig: "",
       });
     }
   }
@@ -2371,6 +2779,7 @@ class VirtualScrollCore {
       this.#snapScrollIfBeyondEnd();
       this.#scheduleUpdate();
     });
+    this.#dataSource.on("expansionChange", () => this.#scheduleUpdate());
     this.#dataSource.on("error", ({ pageIndex, error }) =>
       this.#onError(pageIndex, error),
     );
@@ -2549,6 +2958,36 @@ class VirtualScrollCore {
   }
 
   #onContentClick(e) {
+    // Expand / collapse toggle on an "expand:true" cell.
+    const expandBtn = e.target.closest(".vsg-expand-btn");
+    if (expandBtn) {
+      e.stopPropagation();
+      const rowIndex = this.#renderer.getRowIndexFromEventTarget(e.target);
+      const colKey = expandBtn.dataset.colKey;
+      if (rowIndex >= 0 && colKey) {
+        this.#dataSource.toggleCellExpanded(rowIndex, colKey);
+      }
+      return;
+    }
+
+    // Inline "Collapse ✕" button inside an open expansion panel.
+    const expansionClose = e.target.closest(".vsg-row-expansion-close");
+    if (expansionClose) {
+      e.stopPropagation();
+      const rowIndex = this.#renderer.getRowIndexFromEventTarget(e.target);
+      const colKey = expansionClose.dataset.colKey;
+      if (rowIndex >= 0 && colKey) {
+        this.#dataSource.setCellExpanded(rowIndex, colKey, false);
+      }
+      return;
+    }
+
+    // Clicks inside an expansion panel must not toggle row selection —
+    // they are user interactions with the rendered JSON / rich content.
+    if (e.target.closest(".vsg-row-expansion")) {
+      return;
+    }
+
     // Copy button click
     const copyBtn = e.target.closest(".vsg-copy-btn");
     if (copyBtn) {

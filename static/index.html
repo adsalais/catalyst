@@ -16,7 +16,7 @@
 
         <script
             type="module"
-            src="static/js/virtual-scroll-grid.js?v=1"
+            src="static/js/virtual-scroll-grid.js?v=4"
         ></script>
 
         <style>
@@ -276,6 +276,170 @@
             virtual-scroll-grid::part(cell) {
                 display: flex;
                 align-items: center;
+            }
+
+            /* Expand/Collapse toggle button inside an "expand:true" cell */
+            virtual-scroll-grid::part(expand-btn) {
+                font-family: var(--font);
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 0.02em;
+                color: var(--accent);
+                background: #eff6ff;
+                border: 1px solid #bfdbfe;
+                border-radius: 9999px;
+                padding: 3px 10px;
+                box-shadow: 0 1px 2px rgba(37, 99, 235, 0.08);
+                transition:
+                    background 0.12s ease,
+                    color 0.12s ease,
+                    border-color 0.12s ease,
+                    box-shadow 0.12s ease;
+            }
+            virtual-scroll-grid::part(expand-btn):hover {
+                background: #dbeafe;
+                color: #1e40af;
+                border-color: #93c5fd;
+                box-shadow: 0 1px 3px rgba(37, 99, 235, 0.18);
+            }
+
+            /* Expansion container + individual panels (one per expanded cell) */
+            virtual-scroll-grid {
+                --vsg-expansion-bg: #f8fafc;
+                --vsg-expansion-padding: 10px 16px 14px;
+                --vsg-expansion-label-color: #475569;
+            }
+            virtual-scroll-grid::part(expansion) {
+                background: #f8fafc;
+                border-bottom: 1px solid rgba(37, 99, 235, 0.08);
+                box-shadow: inset 3px 0 0 var(--accent);
+            }
+            virtual-scroll-grid::part(expansion-label) {
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+                color: #1e40af;
+            }
+            virtual-scroll-grid::part(expansion-close) {
+                font-family: var(--font);
+                font-size: 10px;
+                font-weight: 600;
+                color: #64748b;
+                border-radius: 4px;
+                padding: 2px 8px;
+            }
+            virtual-scroll-grid::part(expansion-close):hover {
+                background: #e2e8f0;
+                color: #0f172a;
+            }
+
+            /* ── JSON tree renderer (used inside expansion panels) ────── */
+            .json-tree {
+                font-family:
+                    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                    monospace;
+                font-size: 12px;
+                line-height: 1.55;
+                color: #0f172a;
+                background: #ffffff;
+                border: 1px solid #e2e8f0;
+                border-radius: var(--radius);
+                padding: 8px 10px;
+                max-height: 320px;
+                overflow: auto;
+            }
+            .json-tree details {
+                margin: 0;
+                padding-left: 4px;
+            }
+            .json-tree details[open] > summary .json-caret {
+                transform: rotate(90deg);
+            }
+            .json-tree summary {
+                cursor: pointer;
+                list-style: none;
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                padding: 1px 4px;
+                border-radius: 3px;
+                user-select: none;
+            }
+            .json-tree summary::-webkit-details-marker {
+                display: none;
+            }
+            .json-tree summary:hover {
+                background: #eff6ff;
+            }
+            .json-tree .json-caret {
+                display: inline-block;
+                width: 10px;
+                color: #94a3b8;
+                transition: transform 0.12s ease;
+                font-size: 10px;
+            }
+            .json-tree .json-children {
+                margin: 0;
+                padding-left: 16px;
+                border-left: 1px dashed #e2e8f0;
+            }
+            .json-tree .json-entry {
+                display: flex;
+                align-items: flex-start;
+                gap: 6px;
+                padding: 1px 0;
+            }
+            .json-tree .json-key {
+                color: #1e40af;
+                font-weight: 600;
+                flex-shrink: 0;
+            }
+            .json-tree .json-index {
+                color: #94a3b8;
+                flex-shrink: 0;
+            }
+            .json-tree .json-colon {
+                color: #94a3b8;
+            }
+            .json-tree .json-value {
+                word-break: break-word;
+            }
+            .json-tree .json-string {
+                color: #047857;
+            }
+            .json-tree .json-number {
+                color: #b91c1c;
+            }
+            .json-tree .json-boolean {
+                color: #7c3aed;
+                font-weight: 600;
+            }
+            .json-tree .json-null {
+                color: #6b7280;
+                font-style: italic;
+            }
+            .json-tree .json-meta {
+                color: #64748b;
+                font-style: italic;
+                font-size: 11px;
+            }
+            .json-tree .json-copy {
+                float: right;
+                margin-left: 8px;
+                font-family: var(--font);
+                font-size: 10px;
+                font-weight: 600;
+                color: #64748b;
+                background: #f1f5f9;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                padding: 2px 8px;
+                cursor: pointer;
+            }
+            .json-tree .json-copy:hover {
+                background: #e2e8f0;
+                color: #0f172a;
             }
 
             /* Status bar */
@@ -807,6 +971,147 @@
                 grid.registerCellRenderer("email", (val) =>
                     val == null ? "" : String(val).toLowerCase(),
                 );
+
+                /* ── JSON → collapsible tree renderer ─────────────────────
+                 * Used both for inline cells and — thanks to the grid's
+                 * built-in expand:true support — inside expansion panels.
+                 * For expand:true cells the grid renders an "Expand" toggle
+                 * in-place and calls this renderer for the panel below.
+                 * ─────────────────────────────────────────────────────── */
+                grid.registerCellRenderer("json", (val, col) => {
+                    const root = document.createElement("div");
+                    root.className = "json-tree";
+
+                    const copyBtn = document.createElement("button");
+                    copyBtn.type = "button";
+                    copyBtn.className = "json-copy";
+                    copyBtn.textContent = "Copy JSON";
+                    copyBtn.addEventListener("click", (ev) => {
+                        ev.stopPropagation();
+                        ev.preventDefault();
+                        const text = JSON.stringify(val, null, 2);
+                        navigator.clipboard
+                            ?.writeText(text)
+                            .then(() =>
+                                toast("JSON copied to clipboard", "success"),
+                            )
+                            .catch(() => toast("Copy failed", "error"));
+                    });
+                    root.appendChild(copyBtn);
+
+                    root.appendChild(renderJsonNode(val, { topLevel: true }));
+                    return root;
+                });
+
+                // Helper: recursively build a collapsible <details> tree.
+                function renderJsonNode(value, opts = {}) {
+                    const {
+                        topLevel = false,
+                        keyLabel = null,
+                        indexLabel = null,
+                    } = opts;
+
+                    // Primitive (leaf): render inline.
+                    if (
+                        value === null ||
+                        value === undefined ||
+                        typeof value !== "object"
+                    ) {
+                        const entry = document.createElement("div");
+                        entry.className = "json-entry";
+                        if (keyLabel != null) {
+                            const k = document.createElement("span");
+                            k.className = "json-key";
+                            k.textContent = `"${keyLabel}"`;
+                            entry.appendChild(k);
+                            const c = document.createElement("span");
+                            c.className = "json-colon";
+                            c.textContent = ":";
+                            entry.appendChild(c);
+                        } else if (indexLabel != null) {
+                            const i = document.createElement("span");
+                            i.className = "json-index";
+                            i.textContent = `[${indexLabel}]`;
+                            entry.appendChild(i);
+                        }
+                        entry.appendChild(primitiveSpan(value));
+                        return entry;
+                    }
+
+                    const isArray = Array.isArray(value);
+                    const entries = isArray
+                        ? value.map((v, i) => [i, v])
+                        : Object.entries(value);
+                    const count = entries.length;
+
+                    const details = document.createElement("details");
+                    if (topLevel || count <= 3) details.open = true;
+                    details.className = "json-node";
+
+                    const summary = document.createElement("summary");
+                    const caret = document.createElement("span");
+                    caret.className = "json-caret";
+                    caret.textContent = "▶";
+                    summary.appendChild(caret);
+
+                    if (keyLabel != null) {
+                        const k = document.createElement("span");
+                        k.className = "json-key";
+                        k.textContent = `"${keyLabel}"`;
+                        summary.appendChild(k);
+                        const c = document.createElement("span");
+                        c.className = "json-colon";
+                        c.textContent = ":";
+                        summary.appendChild(c);
+                    } else if (indexLabel != null) {
+                        const i = document.createElement("span");
+                        i.className = "json-index";
+                        i.textContent = `[${indexLabel}]`;
+                        summary.appendChild(i);
+                    }
+
+                    const meta = document.createElement("span");
+                    meta.className = "json-meta";
+                    meta.textContent = isArray
+                        ? `Array(${count})`
+                        : `Object · ${count} ${count === 1 ? "key" : "keys"}`;
+                    summary.appendChild(meta);
+                    details.appendChild(summary);
+
+                    const children = document.createElement("div");
+                    children.className = "json-children";
+                    for (const [k, v] of entries) {
+                        children.appendChild(
+                            renderJsonNode(v, {
+                                keyLabel: isArray ? null : String(k),
+                                indexLabel: isArray ? k : null,
+                            }),
+                        );
+                    }
+                    details.appendChild(children);
+                    return details;
+                }
+
+                function primitiveSpan(v) {
+                    const span = document.createElement("span");
+                    span.classList.add("json-value");
+                    if (v === null || v === undefined) {
+                        span.classList.add("json-null");
+                        span.textContent = "null";
+                    } else if (typeof v === "string") {
+                        span.classList.add("json-string");
+                        span.textContent = `"${v}"`;
+                    } else if (typeof v === "number") {
+                        span.classList.add("json-number");
+                        span.textContent = String(v);
+                    } else if (typeof v === "boolean") {
+                        span.classList.add("json-boolean");
+                        span.textContent = v ? "true" : "false";
+                    } else {
+                        span.textContent = String(v);
+                    }
+                    return span;
+                }
             }); // end customElements.whenDefined
 
             const btnInspect = document.getElementById("btn-inspect");
