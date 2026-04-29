@@ -806,8 +806,8 @@
                     }
                     .json-tree .json-node-children {
                         display: none;
-                        padding-left: 28px;
-                        margin-left: 7px;
+                        padding-left: 16px;
+                        margin-left: 4px;
                         border-left: 1px solid #e2e8f0;
                     }
                     .json-tree .json-node.open > .json-node-children {
@@ -1098,8 +1098,23 @@
                     const entries = isArray
                         ? value.map((v, i) => [i, v])
                         : Object.entries(value);
+
+                    // At top level, skip the root object/array wrapper and render children directly
+                    if (topLevel) {
+                        const container = document.createElement("div");
+                        for (const [k, v] of entries) {
+                            container.appendChild(
+                                renderJsonNode(v, {
+                                    keyLabel: isArray ? null : String(k),
+                                    indexLabel: isArray ? k : null,
+                                }),
+                            );
+                        }
+                        return container;
+                    }
+
                     const count = entries.length;
-                    const startOpen = topLevel || count <= 3;
+                    const startOpen = count <= 3;
 
                     const node = document.createElement("div");
                     node.className = "json-node" + (startOpen ? " open" : "");

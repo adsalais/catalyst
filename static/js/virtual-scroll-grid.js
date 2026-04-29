@@ -68,8 +68,8 @@
  *     fn signature: (value: any, col: ColumnDef) => string | Node
  *     Returning a DOM Node allows rich content (badges, bars, icons).
  *     The renderer is scoped to this element instance only.
- *     Built-in defaults: boolean, number, text, email, phone, status,
- *     percent, currency, date.
+ *     Built-in defaults: boolean, number.  Everything else falls back to
+ *     String(value).
  *
  *   EXPANDABLE CELLS (expand:true on a column)
  *     When a column header carries `"expand": true`, the cell value is NOT
@@ -689,8 +689,8 @@ async function copyToClipboard(text) {
  * Renderer signature:
  *   (value: any, col: ColumnDef) => string | Node
  *
- * Built-in datatypes: boolean, number, text, email, phone, status,
- *   percent, currency, date.
+ * Built-in datatypes: boolean, number.  All other values fall back to
+ *   String(value).
  *
  * Custom renderers registered here take precedence over the legacy
  * `col.type` field.  When no datatype renderer is found the classic

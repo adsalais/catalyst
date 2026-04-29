@@ -25,6 +25,48 @@ Drop the script on your page and declare the element with a `url` pointing to a 
 
 That's it — columns are auto-detected from the first API response and the grid begins fetching and rendering immediately.
 
+### Expected API Response Format
+
+```
+GET /api/data?offset=200&limit=100
+```
+
+```json
+{
+  "rows": [ "...up to 100 row objects or arrays..." ],
+  "headers": [
+    { "key": "id",   "label": "ID",   "width": 4,  "hidden": false },
+    { "key": "name", "label": "Name", "width": 20, "growth": 1 },
+    { "key": "data", "label": "Data", "width": 10, "datatype": "json", "expand": true }
+  ]
+}
+```
+
+**Header object properties:**
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `key` | string | *(required)* | Property name used to extract the cell value from each row object. Must be unique across columns. |
+| `label` | string | `key` | Display text for the column header. Falls back to `key` when omitted. |
+| `width` | number | `2` | Base column width in **character units**. The grid measures a single character and multiplies to get the pixel basis. |
+| `growth` | number | `0` | Flex-grow factor for distributing leftover horizontal space. Columns with `growth > 0` stretch proportionally; `growth: 0` keeps the column at its `width` basis. |
+| `hidden` | boolean | `false` | If `true`, the column starts hidden. Can be toggled at runtime with `setColumnHidden(key, hidden)`. |
+| `datatype` | string | — | Selects which cell renderer to use. Built-in types: `boolean`, `number`, `text`, `email`, `phone`, `status`, `percent`, `currency`, `date`, `json`. Custom types can be registered with `registerCellRenderer()`. |
+| `expand` | boolean | `false` | If `true`, the cell value is **not** rendered inline. Instead, an "Expand" toggle button is shown; clicking it opens an expansion panel below the row. Ideal for large or nested values (e.g. JSON blobs). |
+| `type` | string | — | Legacy alias for `datatype`. When both are present, `datatype` takes precedence. |
+
+**Pagination signals:**
+
+- `rows.length === limit` → more pages likely exist; grid keeps fetching.
+- `rows.length < limit` → this is the final page; grid stops fetching forward.
+- `rows.length === 0` → offset is past the end; scroll snaps back to the last real row.
+
+**Column auto-detection order** (when columns are not set programmatically):
+
+1. `headers` array from the first API response.
+2. Keys of the first row object, if no `headers` field is present.
+
+
 ### Element Attributes
 
 | Attribute | Type | Default | Description |
@@ -113,33 +155,6 @@ virtual-scroll-grid::part(expansion-close)   { /* "Collapse ✕" button inside p
 virtual-scroll-grid::part(expansion-content) { /* content wrapper (rendered value) */ }
 ```
 
-### Expected API Response Format
-
-```
-GET /api/data?offset=200&limit=100
-```
-
-```json
-{
-  "rows": [ "...up to 100 row objects or arrays..." ],
-  "headers": [
-    { "key": "id",   "label": "ID",   "width": 4,  "hidden": false },
-    { "key": "name", "label": "Name", "width": 20, "growth": 1 },
-    { "key": "data", "label": "Data", "width": 10, "datatype": "json", "expand": true }
-  ]
-}
-```
-
-**Pagination signals:**
-
-- `rows.length === limit` → more pages likely exist; grid keeps fetching.
-- `rows.length < limit` → this is the final page; grid stops fetching forward.
-- `rows.length === 0` → offset is past the end; scroll snaps back to the last real row.
-
-**Column auto-detection order** (when columns are not set programmatically):
-
-1. `headers` array from the first API response.
-2. Keys of the first row object, if no `headers` field is present.
 
 ### Custom Cell Renderers
 
